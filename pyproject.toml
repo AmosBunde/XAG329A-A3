@@ -1,0 +1,60 @@
+[project]
+name = "xag329a"
+version = "0.1.0"
+description = "A toolbox for evaluating self-improvement techniques"
+# readme = "README.md"
+requires-python = ">=3.10,<3.13"
+# license = { file = "LICENSE" }
+# authors = [
+#     { name = "stanford-xag329a" },
+# ]
+#classifiers = [
+#     "Development Status :: 3 - Alpha",
+#     "Intended Audience :: Science/Research",
+#     "License :: OSI Approved :: MIT License",
+#     "Operating System :: OS Independent",
+#     "Programming Language :: Python :: 3",
+#     "Programming Language :: Python :: 3.10",
+#     "Programming Language :: Python :: 3.11",
+# ]
+dependencies = [
+    # Shared
+    "litellm",
+    "tenacity",
+    "jupyter",
+    "matplotlib",
+    "python-dotenv",
+    # A2
+    "datasets",
+    "huggingface_hub",
+    "sympy",
+    "antlr4-python3-runtime",
+    "word2number",
+    "latex2sympy2",
+    "timeout-decorator",
+    # A3: tool APIs (xag329a_a3/api_manager.py)
+    "tavily",
+    "massive",
+    "geopy",
+    "requests",
+    "nest-asyncio",
+    "pydantic",
+    # A3: Wolfram|Alpha client (xag329a_a3/wolfram_api.py)
+    "httpx",
+    "xmltodict",
+    "multidict",
+    "more-itertools",
+    "jaraco.context",
+    # A3: notebook
+    "tqdm",
+]
+
+# [project.urls]
+# Homepage = "https://github.com/scpd-proed/XAG329A"
+
+# [tool.uv]
+# package = true
+
+# [tool.setuptools.packages.find]
+# where = ["src/submission"]
+# include = ["xag329a_a2*"]
