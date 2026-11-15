@@ -61,6 +61,12 @@ class MultiLMAgent:
             generation_temp (float): Temperature for language model generation.
         """
         ### TODO: YOUR CODE STARTS HERE
+        self.api_manager = api_manager
+        self.decomposition_model = decomposition_model
+        self.iterative_refinement_model = iterative_refinement_model
+        self.fusion_model = fusion_model
+        self.fusion_sample_models = tuple(fusion_sample_models)
+        self.generation_temp = generation_temp
         ### TODO: YOUR CODE ENDS HERE
 
     def generate(
@@ -77,6 +83,8 @@ class MultiLMAgent:
         # Hint: https://docs.litellm.ai/docs/providers/openrouter or https://openrouter.ai/docs/quickstart
 
         ### TODO: YOUR CODE STARTS HERE
+        messages = [{"role": "user", "content": query}]
+        response = generate_llm(model, messages, temperature)
         ### TODO: YOUR CODE ENDS HERE
 
         # `generate_llm` returns None once its retries are exhausted (e.g. a rate
@@ -100,6 +108,31 @@ class MultiLMAgent:
         # grades the text this returns.
         # prompt_help.md has a prompt suggestion for the routing call.
         ### TODO: YOUR CODE STARTS HERE
+        api_result = self.api_manager.route_query(query) or {}
+        api_used = api_result.get("api_used")
+        api_output = api_result.get("results")
+        api_error = api_result.get("error")
+
+        prompt = "Here is the query: " + query + "\n"
+        source = f" from the '{api_used}' tool" if api_used else ""
+        prompt += f"Here is the response from the API{source}: " + str(api_output) + "\n"
+        if api_error:
+            prompt += (
+                "The API call reported an error: " + str(api_error) + "\n"
+                "Answer the query as well as you can without the API data, and say "
+                "clearly if the answer cannot be determined.\n"
+            )
+        prompt += (
+            "Generate a concise and accurate response to the query based on the API "
+            "response. Clearly state your final answer at the end of the response."
+        )
+
+        response = self.generate(prompt, model=model)
+        if not response:
+            if api_error:
+                return f"Error: the API call failed ({api_error}) and no answer could be generated."
+            return "Error: no answer could be generated for the query."
+        return response
         ### TODO: YOUR CODE ENDS HERE
 
     def _get_query_decomposition_prompt(self, query: str) -> str:
@@ -108,6 +141,29 @@ class MultiLMAgent:
         # Hint: A helpful way structure the output is to enclose each sub-query in <sub-query>...</sub-query> tags. You should provide the model with instructions on how to decompose the query into sub-queries.
         # prompt_help.md has a prompt suggestion
         ### TODO: YOUR CODE STARTS HERE
+        api_functions = getattr(self.api_manager, "api_functions", {}) or {}
+        api_names = ", ".join(api_functions.keys()) or "none"
+
+        prompt = f"""
+Your task is to break down the following user query into the minimal set of sub-queries needed for the API manager to answer it effectively.
+
+User query:
+{query}
+
+Available API functions:
+{api_names}
+
+Guidelines:
+- Each sub-query should be enclosed in <sub-query>...</sub-query> tags.
+- Sub-queries should be distinct and complementary, covering different aspects of the user's request.
+- Only include as many sub-queries as are truly necessary to fully answer the user query.
+- Sub-queries should NOT be dependent on each other; they will be executed independently, in parallel.
+- The sub-queries should be able to be answered without relying on the results of other sub-queries.
+- Each sub-query is answered by one API call with one set of parameters, so each sub-query must ask for exactly one fact: one city, one date, one ticker, or one calculation. A sub-query about two cities or three dates will only return the first one.
+- Copy dates, tickers, and place names exactly as they appear in the user query. Do not substitute a nearby date or a different spelling.
+- Output only the tagged sub-queries, nothing else.
+"""
+        return prompt
         ### TODO: YOUR CODE ENDS HERE
 
     def _get_sub_queries(self, query: str, max_sub_queries: int = 4) -> List[str]:
@@ -120,6 +176,8 @@ class MultiLMAgent:
         # Leave the reply as the raw text it comes back as: the code below is what reads
         # the sub-queries out of the tags and caps how many are kept.
         ### TODO: YOUR CODE STARTS HERE
+        prompt = self._get_query_decomposition_prompt(query)
+        decomposition_response = self.generate(prompt, model=self.decomposition_model)
         ### TODO: YOUR CODE ENDS HERE
 
         if decomposition_response is None:
@@ -176,6 +234,35 @@ class MultiLMAgent:
         # Decomposition can also come back empty, so this should still produce a sensible
         # prompt when there are no results to attach.
         ### TODO: YOUR CODE STARTS HERE
+        # Steps that carry an "error" key contributed nothing, so they are dropped
+        # entirely: their sub-query, API name, parameters and results all stay out.
+        successful_steps = [
+            step for step in decomposed_queries
+            if isinstance(step, dict) and "error" not in step
+        ]
+        for i, step in enumerate(successful_steps):
+            decomposed_queries_results_str += f"Evidence {i + 1}:\n"
+            decomposed_queries_results_str += f"Sub-query: {step.get('sub_query')}\n"
+            decomposed_queries_results_str += f"Source: {step.get('api')} with parameters {step.get('params')}\n"
+            decomposed_queries_results_str += f"Results: {_summarize_results(step.get('results'))}\n\n"
+
+        prompt = f"Your task is to answer the following query: {query}\n"
+        if successful_steps:
+            prompt += (
+                "\nYou are also provided with decomposed sub-queries and their search results:\n"
+                f"{decomposed_queries_results_str}"
+                "Generate a concise and accurate response to the query based on the "
+                "decomposed sub-queries and their results. Clearly state your final "
+                "answer at the end of the response."
+            )
+        else:
+            prompt += (
+                "\nNo supporting API results are available for this query. Answer as "
+                "accurately as you can from your own knowledge, say clearly if the "
+                "answer cannot be determined, and clearly state your final answer at "
+                "the end of the response."
+            )
+        return prompt
         ### TODO: YOUR CODE ENDS HERE
 
     def decompose_and_fuse(self, query: str) -> str:
@@ -194,6 +281,40 @@ class MultiLMAgent:
         #    method returns, and what `evaluate_qa` grades.
         # prompt_help.md has a prompt suggestion for the fusion call.
         ### TODO: YOUR CODE STARTS HERE
+        # Stage 1: gather evidence and build the one synthesis prompt.
+        decomposed_queries = self.decompose_query(query)
+        synthesis_prompt = self._get_synthesis_prompt(query, decomposed_queries)
+
+        # Stage 2: sample one answer per model, in order, skipping failed calls.
+        sampled_responses = []
+        for sample_model in self.fusion_sample_models:
+            sample = self.generate(synthesis_prompt, model=sample_model)
+            if sample:
+                sampled_responses.append(sample)
+
+        if not sampled_responses:
+            # Nothing to fuse. Ask the fusion model the synthesis prompt directly
+            # so the pipeline still produces an answer where it can.
+            fallback = self.generate(synthesis_prompt, model=self.fusion_model)
+            return fallback or "Error: no model produced an answer to the query."
+
+        # Stage 3: fuse the sampled answers with the fusion model.
+        responses_str = ""
+        for i, sample in enumerate(sampled_responses):
+            responses_str += f"Response {i + 1}:\n{sample}\n\n"
+        fusion_prompt = (
+            f"Your task is to answer the following query: {query}\n"
+            "You are also provided with multiple responses to the query:\n"
+            f"{responses_str}"
+            "Based on the responses, generate a concise and accurate response to the "
+            "query. Where the responses disagree, prefer the answer best supported by "
+            "the evidence they cite. Clearly state your final answer at the end of the "
+            "response."
+        )
+        fused = self.generate(fusion_prompt, model=self.fusion_model)
+        if not fused:
+            return sampled_responses[0]
+        return fused
         ### TODO: YOUR CODE ENDS HERE
 
     def _get_iterative_refinement_prompt(self, original_query: str, history: List[Dict[str, Any]]) -> str:
@@ -258,6 +379,19 @@ class MultiLMAgent:
             # printing the history each pass -- it is how you see where a wrong answer began,
             # and `_summarize_results` keeps the printed search output readable.
             ### TODO: YOUR CODE STARTS HERE
+            print(f"[iterative_refine] iteration {i + 1}/{max_iterations}, history so far:")
+            if not history:
+                print("  (no sub-queries executed yet)")
+            for step_index, item in enumerate(history):
+                print(f"  Step {step_index + 1}: {item['sub_query']}")
+                print(f"    API: {item['api']} | Params: {item['params']}")
+                print(f"    Results: {_summarize_results(item['results'])}")
+                if "error" in item:
+                    print(f"    Error: {item['error']}")
+
+            prompt = self._get_iterative_refinement_prompt(query, history)
+            response = self.generate(prompt, model=self.iterative_refinement_model)
+            print(f"[iterative_refine] model response: {response}")
             ### TODO: YOUR CODE ENDS HERE
 
             if response is None:
@@ -293,4 +427,17 @@ class MultiLMAgent:
         # call plus one to answer, and a failed sub-query costs an iteration too.
         # You can use the `max_iterations` parameter to control the maximum number of iterations.
         ### TODO: YOUR CODE STARTS HERE
+        # Iterative refinement handles multi-step questions one fact at a time.
+        # The budget leaves room for several API calls plus retries of failed ones.
+        result = self.iterative_refine(query, max_iterations=10)
+
+        if not result or str(result).startswith("Error:"):
+            # The loop ran out of iterations or the model stopped following the
+            # tag format. Fall back to parallel decomposition and fusion.
+            print(f"[run_pipeline] iterative refinement failed ({result}); falling back to decompose_and_fuse.")
+            result = self.decompose_and_fuse(query)
+
+        if not isinstance(result, str) or not result.strip():
+            return "Error: the pipeline did not produce an answer."
+        return result
         ### TODO: YOUR CODE ENDS HERE
