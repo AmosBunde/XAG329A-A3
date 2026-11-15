@@ -112,6 +112,29 @@ class APIManager:
         # This method hands back a plain dict, not the validated object.
         # prompt_help.md has a prompt suggestion
         ### TODO: YOUR CODE STARTS HERE
+        if function_name not in self.api_functions:
+            print(f"Unknown function '{function_name}'; cannot parse parameters.")
+            return None
+        api_func, schema_model = self.api_functions[function_name]
+        if schema_model is None:
+            print(f"No parameter schema registered for '{function_name}'.")
+            return None
+
+        function_doc = " ".join((api_func.__doc__ or "").split())
+        system_prompt = (
+            f"Extract the parameters for the function '{function_name}' from the user query. "
+            f"The function documentation is: '{function_doc}'. "
+            "Respond ONLY with a valid JSON object that adheres to the provided schema:\n"
+            f"{schema_model.model_json_schema()}"
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": query},
+        ]
+        parsed = generate_structured(model or self.router_model, messages, schema_model)
+        if parsed is None:
+            return None
+        return parsed.model_dump()
         ### TODO: YOUR CODE ENDS HERE
 
     def route_query(self, query: str, model: Optional[str] = None) -> Dict:
@@ -142,6 +165,70 @@ class APIManager:
         # which is what the code below expects.
         # prompt_help.md has a prompt suggestion for the routing call.
         ### TODO: YOUR CODE STARTS HERE
+        routing_model = model or self.router_model
+
+        # One sentence per tool saying when it applies. Any tool without an entry
+        # here falls back to its own docstring.
+        tool_usage = {
+            "compute": (
+                "Use for any arithmetic, unit conversion, percentage, average, "
+                "or other mathematical calculation."
+            ),
+            "get_weather": (
+                "Use for the weather, temperature, humidity, or wind at a specific "
+                "place on a specific date and hour."
+            ),
+            "get_stock_data": (
+                "Use for the open, high, low, close, or volume of a stock ticker "
+                "on a specific date."
+            ),
+            "tavily_search": (
+                "Use for anything else: general knowledge, facts, recent events, "
+                "or information the other tools do not cover."
+            ),
+        }
+        tool_lines = []
+        for name, (api_func, _) in self.api_functions.items():
+            usage = tool_usage.get(name) or " ".join((api_func.__doc__ or "").split())
+            tool_lines.append(f"- {name}: {usage}")
+
+        system_prompt = (
+            "Based on the user's query, determine the most appropriate tool to use. "
+            "Respond ONLY with a valid JSON object that adheres to the provided schema:\n"
+            f"{APIResponse.model_json_schema()}\n\n"
+            f"Available Tools: {', '.join(self.api_functions.keys())}\n\n"
+            "When to use each tool:\n" + "\n".join(tool_lines)
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": query},
+        ]
+        routing = generate_structured(routing_model, messages, APIResponse)
+        if routing is None:
+            return {
+                "results": None,
+                "api_used": None,
+                "params": None,
+                "error": "Routing failed: the model did not choose a tool.",
+            }
+
+        function_name = routing.api_name
+        if function_name not in self.api_functions:
+            return {
+                "results": None,
+                "api_used": function_name,
+                "params": None,
+                "error": f"Routing failed: '{function_name}' is not an available tool.",
+            }
+
+        params = self._parse_query_params(query, function_name, model=model)
+        if params is None:
+            return {
+                "results": None,
+                "api_used": function_name,
+                "params": None,
+                "error": f"Parameter parsing failed for '{function_name}'.",
+            }
         ### TODO: YOUR CODE ENDS HERE
 
         # Call the API function

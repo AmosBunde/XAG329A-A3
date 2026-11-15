@@ -126,7 +126,11 @@ class Client:
         return asyncio.run(self.aquery(input, params, **kwargs))
 
     async def aquery(self, input, params=(), **kwargs):
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        # Wolfram's edge returns an HTML 403 to httpx's default User-Agent,
+        # which then fails XML parsing; any other identifier is accepted.
+        async with httpx.AsyncClient(
+            timeout=self.timeout, headers={"User-Agent": "xag329a-a3/1.0"}
+        ) as client:
             resp = await client.get(
                 self.url,
                 params=multidict.MultiDict(
