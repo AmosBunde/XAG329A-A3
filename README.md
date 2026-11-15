@@ -13,6 +13,55 @@ You will build an API-augmented LLM pipeline and then layer self-improvement met
 
 **Total: 50 points.** Part 4 (Deep Research Agent) in the notebook is optional and ungraded.
 
+## Results
+
+Submission by Amos Bunde. All graded TODO blocks are implemented in `src/submission/xag329a_a3/`, inside the `### TODO` fences only. Pull request with the full write-up: [#1](https://github.com/AmosBunde/XAG329A-A3/pull/1).
+
+### Offline checks
+
+| Check | Result |
+|---|---|
+| Local grader (`src/grader.py`, ten basic tests) | 32/32 |
+| Self-checks (`xag329a_a3/tests`) | 9 of 9 pass |
+| `make_submission.py` | no empty graded TODOs, both Part 3 accuracies present |
+
+### Part 3 evaluation (full dataset, 15 questions)
+
+| Method | Model | Accuracy | Correct |
+|---|---|---|---|
+| Zero-shot `generate` | llama-3.3-70b-instruct | 6.7% | 1 of 15 |
+| `run_pipeline` (iterative refinement, fusion fallback) | llama-3.3-70b-instruct with the API tools | 86.7% | 13 of 15 |
+
+`run_pipeline` drives `iterative_refine` with a budget of ten iterations and falls back to `decompose_and_fuse` when the loop ends without a final answer. The judge is `openai/gpt-oss-20b` via `evaluate_qa`.
+
+Per question outcome for `run_pipeline`:
+
+| # | Question (short) | Answer | Truth | Verdict |
+|---|---|---|---|---|
+| 1 | Thunderstorms in Seattle, noon 1 Jun 2025 | No | No | correct |
+| 2 | Windier on 1 Aug 2025, Chicago or Boston | Boston | Boston | correct |
+| 3 | Miami 9AM below 70F, 1 to 3 Aug 2025 | No | No | correct |
+| 4 | TSLA up or down on 5 Mar 2025 vs open | Up | up | correct |
+| 5 | TSLA close change, 4 to 6 Nov 2024 | data unavailable | 19 | wrong |
+| 6 | TSLA close 27 Aug 2025 plus 11.2% | 388.76 | 388.76 | correct |
+| 7 | Normalization constant, cos(x)/sqrt(x) on [1,2] | 13 | 13 | correct |
+| 8 | Real root of x^3 = x^5 + 100 | -2.59 | -2.59 | correct |
+| 9 | Rectangle area in square inches | 1299 | 1299 | correct |
+| 10 | 2024 Beyoncé country-pop album | Cowboy Carter | Cowboy Carter | correct |
+| 11 | Next Avatar film title | Avatar: Fire and Ash | Fire and Ash | correct |
+| 12 | Three-star restaurants in San Francisco, 2025 | 3 | Three | correct |
+| 13 | Michelin restaurant in Palo Alto, 2025 | Ethel's Fancy | Protégé | wrong |
+| 14 | Zareen's Palo Alto Saturday opening | 11:00 AM | 11:00 AM | correct |
+| 15 | Nationality of 2025 Wimbledon men's champion | Italian | Italian | correct |
+
+The two misses are environmental rather than code defects. Question 5 asks for dates that the free Polygon/Massive plan no longer serves, since they fell outside its two year historical window at the time of the run. Question 13 is answered from live web search, which now returns coverage of the 2026 Michelin guide, while the ground truth reflects the 2025 guide.
+
+### Notes from the runs
+
+- The pipeline was evaluated three times with the same code: 80.0%, 73.3% and 86.7%. The spread comes from sampling at temperature 0.7 and from which articles the search tool returns for the time-sensitive questions. Zero-shot scored 0.0% once and 6.7% twice.
+- The `compute` tool failed on every call in the first run. Wolfram|Alpha's edge returns an HTML 403 page to the default `python-httpx` User-Agent, which the client then fails to parse as XML. A one line `User-Agent` header in `wolfram_api.py` fixed it; see the pull request for the probe that isolated it. After the fix the pipeline run logged 26 successful computations and no failures.
+- Part 4 (Deep Research Agent) is optional and was not attempted.
+
 ## Submission
 
 Your graded code for this assignment lives in the `xag329a_a3` package, not in the
